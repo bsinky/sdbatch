@@ -1,4 +1,4 @@
-use std::{io, fs, path};
+use std::path;
 
 use batch::BatchTemplate;
 use clap::{Parser, Subcommand};
@@ -24,7 +24,14 @@ fn main() {
                         }
                     }
                 }
-                Commands::Reroll { file, index } => todo!(),
+                Commands::Reroll { file, index, all } => {
+                    if index.is_none() && !all {
+                        println!("Reroll requires either --all or an INDEX to run")
+                    }
+                    else {
+                        todo!()
+                    }
+                },
                 Commands::Create { name, output_dir } => {
                     let mut template:BatchTemplate = Default::default();
                     template.name = name;
@@ -66,11 +73,15 @@ enum Commands {
         output: String,
     },
     Reroll {
+        /// Regenerate all images from the log
+        #[arg(long)]
+        all: bool,
+
         /// Batch log file to reroll for
         file: String,
 
         /// Image index to reroll
-        index: usize,
+        index: Option<usize>,
     },
     /// Generate an empty Template file
     Create {

@@ -176,6 +176,7 @@ impl BatchTemplate {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum Prompts {
     /// Basic static prompt option
     ///
