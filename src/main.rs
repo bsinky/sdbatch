@@ -14,8 +14,8 @@ fn main() {
         },
         Some(command) => {
             match command {
-                Commands::Run { dry_run, file, output } => {
-                    match batch::do_run(dry_run, &file, &output) {
+                Commands::Run { dry_run, file, output, sequential } => {
+                    match batch::do_run(dry_run, sequential, &file, &output) {
                         Ok(results) => {
                             println!("Template run successful, created {} images", results.images_created)
                         },
@@ -65,6 +65,10 @@ enum Commands {
         /// Do not generate images, merely process input files and generate prompts
         #[arg(short = 'n', long)]
         dry_run: bool,
+
+        /// Generate images sequentially instead of picking prompts in a random order
+        #[arg(short, long)]
+        sequential: bool,
 
         /// JSON input file for batch template
         file: String,

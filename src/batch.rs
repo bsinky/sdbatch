@@ -74,7 +74,7 @@ impl fmt::Display for BatchError {
 impl std::error::Error for BatchError {}
 
 impl BatchTemplate {
-    fn run(&self, dry_run: bool) -> anyhow::Result<BatchLog> {
+    fn run(&self, dry_run: bool, sequential: bool) -> anyhow::Result<BatchLog> {
         let count = self.count.unwrap_or(self.prompts.len());
         if self.prompts.len() < count {
             return Err(BatchError {
@@ -85,10 +85,14 @@ impl BatchTemplate {
             .into());
         }
 
-        let prompt_pool: Vec<&Prompts> = self
-            .prompts
-            .choose_multiple(&mut rand::thread_rng(), count)
-            .collect();
+        let prompt_pool: Vec<&Prompts> = if sequential {
+            self.prompts.iter().take(count).collect()
+        } else {
+            self.prompts
+                .choose_multiple(&mut rand::thread_rng(), count)
+                .collect()
+        };
+
         let mut batch_log = BatchLog::new(&self.name);
 
         for prompt in prompt_pool {
@@ -140,7 +144,8 @@ impl BatchTemplate {
                 let roll: f32 = rng.gen();
                 if roll <= modifier.chance {
                     // ring-a-ding-ding!
-                    prompt_data.positive = Self::combine_prompts(&prompt_data.positive, &modifier.prompt);
+                    prompt_data.positive =
+                        Self::combine_prompts(&prompt_data.positive, &modifier.prompt);
                 }
             }
         }
@@ -158,17 +163,14 @@ impl BatchTemplate {
     }
 
     fn safe_template_filename(&self) -> PathBuf {
-        // TODO: could do more to strip unsafe characters, but this is good enough for now
-        let sanitized_filename = self.name.replace(" ", "-");
+        let sanitized_filename = get_safe_filename(&self.name);
         return format!("{}.json", sanitized_filename).into();
     }
 
     /// Serialize to JSON and write to disk
     pub fn write(&self, output_dir: &Path) -> anyhow::Result<PathBuf> {
         let dest_filename = self.safe_template_filename();
-        let dest: PathBuf = PathBuf::from(output_dir).join(&dest_filename);
-
-        let dest_file = fs::File::create(&dest)?;
+        let (_, dest_file) = create_file_and_dir(output_dir, &dest_filename)?;
         serde_json::to_writer_pretty(&dest_file, self)?;
 
         Ok(dest_filename)
@@ -209,6 +211,22 @@ pub struct BatchLog {
     images: Vec<PromptData>,
 }
 
+fn create_file_and_dir(
+    output_dir: &Path,
+    dest_filename: &Path,
+) -> anyhow::Result<(PathBuf, fs::File)> {
+    let dest: PathBuf = PathBuf::from(output_dir).join(&dest_filename);
+    std::fs::create_dir_all(output_dir)?;
+    let dest_file = fs::File::create(&dest)?;
+    Ok((dest, dest_file))
+}
+
+fn get_safe_filename(name: &str) -> String {
+    // TODO: could do more to strip unsafe characters, but this is good enough for now
+    let sanitized_filename = name.replace(" ", "-");
+    return sanitized_filename;
+}
+
 impl BatchLog {
     fn new(name: &str) -> BatchLog {
         return BatchLog {
@@ -221,16 +239,14 @@ impl BatchLog {
         let timestamp = Local::now();
         let timestamp = format!("{}", timestamp.format("%Y-%m-%d-%H%M"));
 
-        // TODO: could do more to strip unsafe characters, but this is good enough for now
-        let sanitized_filename = name.replace(" ", "-");
+        let sanitized_filename = get_safe_filename(name);
         return format!("{}-{}.json", sanitized_filename, timestamp).into();
     }
 
+    /// Serialize to JSON and write to disk
     pub fn write(&self, output_dir: &Path, template_name: &str) -> anyhow::Result<PathBuf> {
         let dest_filename = self.safe_logfile_name(template_name);
-        let dest: PathBuf = PathBuf::from(output_dir).join(&dest_filename);
-
-        let dest_file = fs::File::create(&dest)?;
+        let (_, dest_file) = create_file_and_dir(output_dir, &dest_filename)?;
         serde_json::to_writer_pretty(&dest_file, self)?;
 
         Ok(dest_filename)
@@ -244,13 +260,14 @@ pub struct TemplateRunResults {
 
 pub fn do_run(
     dry_run: bool,
+    sequential: bool,
     template_filename: &str,
     output_filename: &str,
 ) -> anyhow::Result<TemplateRunResults> {
     let json_string = fs::read_to_string(template_filename)?;
     let template: BatchTemplate = serde_json::from_str(&json_string)?;
 
-    let batch_log = template.run(dry_run)?;
+    let batch_log = template.run(dry_run, sequential)?;
     let log_file = batch_log.write(Path::new(output_filename), &template.name)?;
 
     Ok(TemplateRunResults {
