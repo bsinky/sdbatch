@@ -4,31 +4,39 @@ use rand::Rng;
 use std::{
     fmt::{self},
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
+
+use self::auto1111_api::APIClient;
+
+mod auto1111_api;
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct PromptData {
     positive: String,
     negative: String,
     model: String,
-    /// Sampler to use, ex., "DPM 2M++"
+    /// Sampler to use, ex., "DPM 2M++ Karras"
     sampler: String,
     steps: u32,
-    /// Image resolution at generation time, before Hi-res
-    resolution: String,
+    /// Image width at generation time, before Hi-res
+    width: u32,
+    /// Image height at generation time, before Hi-res
+    height: u32,
     cfg: f32,
-    seed: Option<u64>,
+    seed: Option<i64>,
     hires: Option<HiResSettings>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct HiResSettings {
     upscaler: String,
-    upscale_by: u8,
+    upscale_by: f32,
     denoising_strength: f32,
+    steps: u8,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -41,7 +49,7 @@ pub struct BatchTemplate {
 
     /// Automatic1111 URL
     ///
-    /// Defaults to 127.0.0.1:7690
+    /// Defaults to http://127.0.0.1:7860
     pub api_url: Option<String>,
 
     /// Prompt setup to be used for all images
@@ -73,8 +81,13 @@ impl fmt::Display for BatchError {
 
 impl std::error::Error for BatchError {}
 
+#[derive(Deserialize)]
+struct Txt2ImgInfo {
+    all_seeds: Vec<i64>,
+}
+
 impl BatchTemplate {
-    fn run(&self, dry_run: bool, sequential: bool) -> anyhow::Result<BatchLog> {
+    fn run(&self, dry_run: bool, output_dir: &str, sequential: bool) -> anyhow::Result<BatchLog> {
         let count = self.count.unwrap_or(self.prompts.len());
         if self.prompts.len() < count {
             return Err(BatchError {
@@ -95,12 +108,32 @@ impl BatchTemplate {
 
         let mut batch_log = BatchLog::new(&self.name);
 
-        for prompt in prompt_pool {
-            let prompt_data = self.run_prompt(dry_run, prompt)?;
+        if !dry_run {
+            std::fs::create_dir_all(output_dir)?;
+        }
+
+        let api = self.get_api_client(dry_run)?;
+
+        for (prompt_index, prompt) in prompt_pool.iter().enumerate() {
+            let prompt_data = self.run_prompt(&api, output_dir, prompt, prompt_index)?;
             batch_log.images.push(prompt_data);
         }
 
         Ok(batch_log)
+    }
+
+    fn get_api_client(&self, dry_run: bool) -> anyhow::Result<Option<APIClient>> {
+        if dry_run {
+            return Ok(None);
+        }
+
+        let url_to_use = match self.api_url.clone() {
+            Some(url) => url,
+            None => "http://127.0.0.1:7860".to_string(),
+        };
+        println!("Using API at: {}", url_to_use);
+        let api = auto1111_api::APIClient::new(&url_to_use)?;
+        Ok(Some(api))
     }
 
     /// Build a full positive prompt using Template's positive prompt settings and the given positive fragment
@@ -127,7 +160,13 @@ impl BatchTemplate {
         return data;
     }
 
-    fn run_prompt(&self, dry_run: bool, prompt: &Prompts) -> anyhow::Result<PromptData> {
+    fn run_prompt(
+        &self,
+        api: &Option<APIClient>,
+        output_dir: &str,
+        prompt: &Prompts,
+        prompt_index: usize,
+    ) -> anyhow::Result<PromptData> {
         let mut rng = rand::thread_rng();
         let mut prompt_data = match prompt {
             Prompts::Single(positive) => self.copy_with_positive(positive),
@@ -150,16 +189,50 @@ impl BatchTemplate {
             }
         }
 
-        if !dry_run {
-            self.generate_image(&mut prompt_data)?;
+        if let Some(api) = api {
+            println!("Generating image {}...", prompt_index + 1);
+            self.generate_image(output_dir, &api, &mut prompt_data, prompt_index)?;
         }
 
         Ok(prompt_data)
     }
 
     /// Use the Automatic1111 API and generate an image for the given prompt, and sets the seed
-    fn generate_image(&self, prompt: &mut PromptData) -> anyhow::Result<()> {
-        todo!()
+    fn generate_image(
+        &self,
+        output_dir: &str,
+        api: &auto1111_api::APIClient,
+        prompt: &mut PromptData,
+        prompt_index: usize,
+    ) -> anyhow::Result<()> {
+        let (image_list, info) = api.txt2img(prompt)?;
+
+        let info: Txt2ImgInfo = serde_json::from_str(&info)?;
+
+        for (i, image_bytes) in image_list.iter().enumerate() {
+            let mut image_filename = PathBuf::from(output_dir);
+            if i == 0 {
+                image_filename.push(format!("{:02}.png", prompt_index));
+                if let Some(seed) = info.all_seeds.first() {
+                    prompt.seed = Some(*seed);
+                }
+            } else {
+                image_filename.push(format!("{:02}-{}.png", prompt_index, i));
+                // TODO: Better support for multiple images/batches.
+                // TODO: We will have seeds for these, but nowhere to put them in the log.
+            }
+
+            let mut dest_file = fs::File::create(&image_filename)?;
+            dest_file.write_all(image_bytes)?;
+        }
+
+        Ok(())
+    }
+
+    fn deserialize_info(&self, info: &str) -> anyhow::Result<Txt2ImgInfo> {
+        // let unescaped_json = info.replace("\\\"", "\"").replace("\\\\", "\\");
+        let info_des: Txt2ImgInfo = serde_json::from_str(&info)?;
+        Ok(info_des)
     }
 
     fn safe_template_filename(&self) -> PathBuf {
@@ -189,7 +262,7 @@ pub enum Prompts {
     ///
     /// ex., \["1girl, solo, dress", "1girl, solo, shirt, jeans"\]
     Multiple(Vec<String>),
-    // TODO: MultipleWeighted(Vec<WeightedPrompt>), struct option similar to Multiple but with a weight specified for each prompt
+    // Idea: MultipleWeighted(Vec<WeightedPrompt>), struct option similar to Multiple but with a weight specified for each prompt
 }
 
 #[derive(Serialize, Deserialize)]
@@ -267,7 +340,7 @@ pub fn do_run(
     let json_string = fs::read_to_string(template_filename)?;
     let template: BatchTemplate = serde_json::from_str(&json_string)?;
 
-    let batch_log = template.run(dry_run, sequential)?;
+    let batch_log = template.run(dry_run, output_filename, sequential)?;
     let log_file = batch_log.write(Path::new(output_filename), &template.name)?;
 
     Ok(TemplateRunResults {

@@ -1,4 +1,4 @@
-use std::path;
+use std::{path, time::Instant};
 
 use batch::BatchTemplate;
 use clap::{Parser, Subcommand};
@@ -15,9 +15,11 @@ fn main() {
         Some(command) => {
             match command {
                 Commands::Run { dry_run, file, output, sequential } => {
+                    let start = Instant::now();
                     match batch::do_run(dry_run, sequential, &file, &output) {
                         Ok(results) => {
-                            println!("Template run successful, created {} images", results.images_created)
+                            let duration = start.elapsed();
+                            println!("Template run successful, created {} images in {:?}", results.images_created, duration)
                         },
                         Err(err) => {
                             println!("Template run error: {:?}", err)
@@ -69,6 +71,8 @@ enum Commands {
         /// Generate images sequentially instead of picking prompts in a random order
         #[arg(short, long)]
         sequential: bool,
+
+        // TODO: idea: interactive mode, pause after generating each image and display it to the user until they continue
 
         /// JSON input file for batch template
         file: String,
