@@ -68,6 +68,16 @@ pub struct BatchTemplate {
     pub modifiers: Option<Vec<WeightedPrompt>>,
 }
 
+fn get_api_client(api_url: Option<&str>) -> anyhow::Result<APIClient> {
+    let url_to_use = match api_url {
+        Some(url) => url,
+        None => "http://127.0.0.1:7860",
+    };
+    println!("Using API at: {}", url_to_use);
+    let api = auto1111_api::APIClient::new(&url_to_use)?;
+    Ok(api)
+}
+
 #[derive(Debug, Clone)]
 pub struct BatchError {
     message: String,
@@ -87,7 +97,7 @@ struct Txt2ImgInfo {
 }
 
 impl BatchTemplate {
-    fn run(&self, dry_run: bool, output_dir: &str, sequential: bool) -> anyhow::Result<BatchLog> {
+    fn run(&self, dry_run: bool, output_dir: &Path, sequential: bool, api_url: Option<&str>) -> anyhow::Result<BatchLog> {
         let count = self.count.unwrap_or(self.prompts.len());
         if self.prompts.len() < count {
             return Err(BatchError {
@@ -112,7 +122,11 @@ impl BatchTemplate {
             std::fs::create_dir_all(output_dir)?;
         }
 
-        let api = self.get_api_client(dry_run)?;
+        let api = if dry_run {
+            None
+        } else {
+            Some(get_api_client(api_url)?)
+        };
 
         for (prompt_index, prompt) in prompt_pool.iter().enumerate() {
             let prompt_data = self.run_prompt(&api, output_dir, prompt, prompt_index)?;
@@ -120,20 +134,6 @@ impl BatchTemplate {
         }
 
         Ok(batch_log)
-    }
-
-    fn get_api_client(&self, dry_run: bool) -> anyhow::Result<Option<APIClient>> {
-        if dry_run {
-            return Ok(None);
-        }
-
-        let url_to_use = match self.api_url.clone() {
-            Some(url) => url,
-            None => "http://127.0.0.1:7860".to_string(),
-        };
-        println!("Using API at: {}", url_to_use);
-        let api = auto1111_api::APIClient::new(&url_to_use)?;
-        Ok(Some(api))
     }
 
     /// Build a full positive prompt using Template's positive prompt settings and the given positive fragment
@@ -163,7 +163,7 @@ impl BatchTemplate {
     fn run_prompt(
         &self,
         api: &Option<APIClient>,
-        output_dir: &str,
+        output_dir: &Path,
         prompt: &Prompts,
         prompt_index: usize,
     ) -> anyhow::Result<PromptData> {
@@ -191,7 +191,7 @@ impl BatchTemplate {
 
         if let Some(api) = api {
             println!("Generating image {}...", prompt_index + 1);
-            self.generate_image(output_dir, &api, &mut prompt_data, prompt_index)?;
+            Self::generate_image(output_dir, &api, &mut prompt_data, prompt_index)?;
         }
 
         Ok(prompt_data)
@@ -199,8 +199,7 @@ impl BatchTemplate {
 
     /// Use the Automatic1111 API and generate an image for the given prompt, and sets the seed
     fn generate_image(
-        &self,
-        output_dir: &str,
+        output_dir: &Path,
         api: &auto1111_api::APIClient,
         prompt: &mut PromptData,
         prompt_index: usize,
@@ -227,12 +226,6 @@ impl BatchTemplate {
         }
 
         Ok(())
-    }
-
-    fn deserialize_info(&self, info: &str) -> anyhow::Result<Txt2ImgInfo> {
-        // let unescaped_json = info.replace("\\\"", "\"").replace("\\\\", "\\");
-        let info_des: Txt2ImgInfo = serde_json::from_str(&info)?;
-        Ok(info_des)
     }
 
     fn safe_template_filename(&self) -> PathBuf {
@@ -308,6 +301,12 @@ impl BatchLog {
         };
     }
 
+    fn from_file(file_path: &str) -> anyhow::Result<BatchLog> {
+        let log_file = fs::File::open(file_path)?;
+        let log: BatchLog = serde_json::from_reader(log_file)?;
+        Ok(log)
+    }
+
     fn safe_logfile_name(&self, name: &str) -> PathBuf {
         let timestamp = Local::now();
         let timestamp = format!("{}", timestamp.format("%Y-%m-%d-%H%M"));
@@ -324,6 +323,12 @@ impl BatchLog {
 
         Ok(dest_filename)
     }
+
+    /// Serialize to JSON and write to disk, overwriting original file
+    pub fn write_update(&self, log_file: &fs::File) -> anyhow::Result<()> {
+        serde_json::to_writer_pretty(log_file, self)?;
+        Ok(())
+    }
 }
 
 pub struct TemplateRunResults {
@@ -335,13 +340,16 @@ pub fn do_run(
     dry_run: bool,
     sequential: bool,
     template_filename: &str,
-    output_filename: &str,
+    output_dir: &str,
+    api_url: Option<&str>
 ) -> anyhow::Result<TemplateRunResults> {
     let json_string = fs::read_to_string(template_filename)?;
     let template: BatchTemplate = serde_json::from_str(&json_string)?;
 
-    let batch_log = template.run(dry_run, output_filename, sequential)?;
-    let log_file = batch_log.write(Path::new(output_filename), &template.name)?;
+    let output_dir = PathBuf::from(output_dir);
+
+    let batch_log = template.run(dry_run, &output_dir, sequential, api_url)?;
+    let log_file = batch_log.write(&output_dir, &template.name)?;
 
     Ok(TemplateRunResults {
         images_created: batch_log.images.len(),
@@ -349,6 +357,36 @@ pub fn do_run(
     })
 }
 
-pub fn reroll(file: &str, index: usize) {
+pub fn reroll(file_path: &str, index: usize, api_url: Option<&str>) -> anyhow::Result<()> {
+    let mut log = BatchLog::from_file(file_path)?;
+
+    let path = PathBuf::from(file_path);
+    let output_dir = path.parent().expect("couldn't get folder from file_path");
+
+    match log.images.iter().nth(index) {
+        None => Err(BatchError {
+            message: format!(
+                "Reroll error: Log file contains less than {} images",
+                index + 1
+            ),
+        }
+        .into()),
+        Some(prompt) => {
+            let api = get_api_client(api_url)?;
+
+            let mut updated_prompt = prompt.to_owned();
+            updated_prompt.seed = None;
+            BatchTemplate::generate_image(output_dir, &api, &mut updated_prompt, index)?; 
+            log.images[index] = updated_prompt;
+            let dest_file = fs::File::create(path)?;
+            log.write_update(&dest_file)?;
+
+            Ok(())
+        }
+    }
+}
+
+pub fn reroll_all(file: &str) {
     todo!()
+    // let mut log = BatchLog::from_file(file_path)?;
 }
