@@ -45,13 +45,19 @@ fn main() {
                 } else if index.is_some() && all {
                     println!("Reroll requires either --all or an INDEX to run, not both")
                 } else if let Some(index) = index {
-                    println!("Regenerating image {} with a new seed...", index);
                     match batch::reroll(&file, index, api_url.as_deref()) {
                         Ok(_) => println!("Done!"),
                         Err(e) => println!("Reroll error: {}", e),
                     }
                 } else if all {
-                    batch::reroll_all(&file);
+                    let start = Instant::now();
+                    match batch::reroll_all(&file, api_url.as_deref()) {
+                        Ok(_) => {
+                            let duration = start.elapsed();
+                            println!("Reroll all successful, completed in {:?}", duration)
+                        }
+                        Err(e) => println!("Reroll all error: {}", e),
+                    }
                 }
             }
             Commands::Create { name, output_dir } => {

@@ -97,7 +97,13 @@ struct Txt2ImgInfo {
 }
 
 impl BatchTemplate {
-    fn run(&self, dry_run: bool, output_dir: &Path, sequential: bool, api_url: Option<&str>) -> anyhow::Result<BatchLog> {
+    fn run(
+        &self,
+        dry_run: bool,
+        output_dir: &Path,
+        sequential: bool,
+        api_url: Option<&str>,
+    ) -> anyhow::Result<BatchLog> {
         let count = self.count.unwrap_or(self.prompts.len());
         if self.prompts.len() < count {
             return Err(BatchError {
@@ -341,7 +347,7 @@ pub fn do_run(
     sequential: bool,
     template_filename: &str,
     output_dir: &str,
-    api_url: Option<&str>
+    api_url: Option<&str>,
 ) -> anyhow::Result<TemplateRunResults> {
     let json_string = fs::read_to_string(template_filename)?;
     let template: BatchTemplate = serde_json::from_str(&json_string)?;
@@ -355,6 +361,10 @@ pub fn do_run(
         images_created: batch_log.images.len(),
         log_file,
     })
+}
+
+fn print_reroll_start(index: usize) {
+    println!("Regenerating image {} with a new seed...", index);
 }
 
 pub fn reroll(file_path: &str, index: usize, api_url: Option<&str>) -> anyhow::Result<()> {
@@ -376,7 +386,8 @@ pub fn reroll(file_path: &str, index: usize, api_url: Option<&str>) -> anyhow::R
 
             let mut updated_prompt = prompt.to_owned();
             updated_prompt.seed = None;
-            BatchTemplate::generate_image(output_dir, &api, &mut updated_prompt, index)?; 
+            print_reroll_start(index);
+            BatchTemplate::generate_image(output_dir, &api, &mut updated_prompt, index)?;
             log.images[index] = updated_prompt;
             let dest_file = fs::File::create(path)?;
             log.write_update(&dest_file)?;
@@ -386,7 +397,25 @@ pub fn reroll(file_path: &str, index: usize, api_url: Option<&str>) -> anyhow::R
     }
 }
 
-pub fn reroll_all(file: &str) {
-    todo!()
+pub fn reroll_all(file_path: &str, api_url: Option<&str>) -> anyhow::Result<()> {
     // let mut log = BatchLog::from_file(file_path)?;
+    let mut log = BatchLog::from_file(file_path)?;
+
+    let path = PathBuf::from(file_path);
+    let output_dir = path.parent().expect("couldn't get folder from file_path");
+
+    let api = get_api_client(api_url)?;
+
+    for (index, prompt) in log.images.clone().iter().enumerate() {
+        print_reroll_start(index);
+
+        let mut updated_prompt = prompt.to_owned();
+        updated_prompt.seed = None;
+        BatchTemplate::generate_image(output_dir, &api, &mut updated_prompt, index)?;
+        log.images[index] = updated_prompt;
+    }
+    let dest_file = fs::File::create(path)?;
+    log.write_update(&dest_file)?;
+
+    Ok(())
 }
