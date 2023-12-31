@@ -4,6 +4,7 @@ use batch::BatchTemplate;
 use clap::{Parser, Subcommand};
 
 mod batch;
+mod util;
 
 fn main() {
     let args = Args::parse();
@@ -25,8 +26,8 @@ fn main() {
                     Ok(results) => {
                         let duration = start.elapsed();
                         println!(
-                            "Template run successful, created {} images in {:?}",
-                            results.images_created, duration
+                            "Template run successful, created {} images in {}",
+                            results.images_created, util::print_elapsed(&duration)
                         )
                     }
                     Err(err) => {
@@ -54,7 +55,7 @@ fn main() {
                     match batch::reroll_all(&file, api_url.as_deref()) {
                         Ok(_) => {
                             let duration = start.elapsed();
-                            println!("Reroll all successful, completed in {:?}", duration)
+                            println!("Reroll all successful, completed in {}", util::print_elapsed(&duration))
                         }
                         Err(e) => println!("Reroll all error: {}", e),
                     }

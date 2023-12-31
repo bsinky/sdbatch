@@ -51,14 +51,22 @@ struct PromptData {
     /// Image height at generation time, before Hi-res
     height: u32,
     cfg_scale: f32,
+    overrides: Option<SettingsOverrides>,
     seed: i64,
     enable_hr: bool,
     hr_scale: f32,
     hr_upscaler: String,
     hr_second_pass_steps: u8,
+    denoising_strength: f32,
     send_images: bool,
     save_images: bool,
     restore_faces: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+struct SettingsOverrides {
+    /// Clip Skip
+    CLIP_stop_at_last_layers: u8,
 }
 
 impl From<&super::PromptData> for PromptData {
@@ -71,6 +79,9 @@ impl From<&super::PromptData> for PromptData {
             width: value.width,
             height: value.height,
             cfg_scale: value.cfg,
+            overrides: Some(SettingsOverrides {
+                CLIP_stop_at_last_layers: value.clip_skip.unwrap_or(1),
+            }),
             seed: value.seed.unwrap_or(-1),
             enable_hr: value.hires.is_some(),
             hr_scale: match &value.hires {
@@ -84,6 +95,10 @@ impl From<&super::PromptData> for PromptData {
             hr_second_pass_steps: match &value.hires {
                 Some(hires) => hires.steps,
                 None => 0,
+            },
+            denoising_strength: match &value.hires {
+                Some(hires) => hires.denoising_strength,
+                None => 0.4,
             },
             send_images: true,
             save_images: false,
@@ -107,16 +122,24 @@ struct Txt2ImgResponse {
 pub struct APIClient {
     api_url: String,
     client: reqwest::blocking::Client,
+    save_images: bool,
+    restore_faces: bool,
 }
 
 impl APIClient {
-    pub fn new(api_url: &str) -> anyhow::Result<APIClient> {
+    pub fn new(
+        api_url: &str,
+        save_images: &Option<bool>,
+        restore_faces: &Option<bool>,
+    ) -> anyhow::Result<APIClient> {
         let timeout = std::time::Duration::new(90, 0);
         let client = ClientBuilder::new().timeout(timeout).build()?;
 
         Ok(APIClient {
             api_url: api_url.to_owned(),
             client,
+            save_images: save_images.unwrap_or(false),
+            restore_faces: restore_faces.unwrap_or(false),
         })
     }
 
@@ -184,7 +207,9 @@ impl APIClient {
     pub fn txt2img(&self, prompt: &super::PromptData) -> anyhow::Result<(Vec<Vec<u8>>, String)> {
         self.ensure_model(&prompt.model)?;
 
-        let prompt: PromptData = prompt.into();
+        let mut prompt: PromptData = prompt.into();
+        prompt.save_images = self.save_images;
+        prompt.restore_faces = self.restore_faces;
 
         let resp = self
             .client

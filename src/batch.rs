@@ -27,6 +27,8 @@ pub struct PromptData {
     /// Image height at generation time, before Hi-res
     height: u32,
     cfg: f32,
+    // Clip Skip setting, defaults to 1
+    clip_skip: Option<u8>,
     seed: Option<i64>,
     hires: Option<HiResSettings>,
 }
@@ -61,6 +63,12 @@ pub struct BatchTemplate {
     /// Defaults to the number of prompts in the pool
     pub count: Option<usize>,
 
+    /// Whether Automatic1111 should save images on the server, defaults to false
+    pub save_images: Option<bool>,
+
+    /// Whether Automatic1111 should run face restoration, defaults to false
+    pub restore_faces: Option<bool>,
+
     /// The pool of prompts to pick from
     pub prompts: Vec<Prompts>,
 
@@ -68,13 +76,13 @@ pub struct BatchTemplate {
     pub modifiers: Option<Vec<WeightedPrompt>>,
 }
 
-fn get_api_client(api_url: Option<&str>) -> anyhow::Result<APIClient> {
+fn get_api_client(api_url: Option<&str>, save_images: &Option<bool>, restore_faces: &Option<bool>) -> anyhow::Result<APIClient> {
     let url_to_use = match api_url {
         Some(url) => url,
         None => "http://127.0.0.1:7860",
     };
     println!("Using API at: {}", url_to_use);
-    let api = auto1111_api::APIClient::new(&url_to_use)?;
+    let api = auto1111_api::APIClient::new(&url_to_use, save_images, restore_faces)?;
     Ok(api)
 }
 
@@ -131,7 +139,7 @@ impl BatchTemplate {
         let api = if dry_run {
             None
         } else {
-            Some(get_api_client(api_url)?)
+            Some(get_api_client(api_url, &self.save_images, &self.restore_faces)?)
         };
 
         for (prompt_index, prompt) in prompt_pool.iter().enumerate() {
@@ -382,7 +390,7 @@ pub fn reroll(file_path: &str, index: usize, api_url: Option<&str>) -> anyhow::R
         }
         .into()),
         Some(prompt) => {
-            let api = get_api_client(api_url)?;
+            let api = get_api_client(api_url, &None, &None)?;
 
             let mut updated_prompt = prompt.to_owned();
             updated_prompt.seed = None;
@@ -404,7 +412,7 @@ pub fn reroll_all(file_path: &str, api_url: Option<&str>) -> anyhow::Result<()> 
     let path = PathBuf::from(file_path);
     let output_dir = path.parent().expect("couldn't get folder from file_path");
 
-    let api = get_api_client(api_url)?;
+    let api = get_api_client(api_url, &None, &None)?;
 
     for (index, prompt) in log.images.clone().iter().enumerate() {
         print_reroll_start(index);
