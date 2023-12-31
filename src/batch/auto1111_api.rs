@@ -132,7 +132,7 @@ impl APIClient {
         save_images: &Option<bool>,
         restore_faces: &Option<bool>,
     ) -> anyhow::Result<APIClient> {
-        let timeout = std::time::Duration::new(90, 0);
+        let timeout = std::time::Duration::new(180, 0);
         let client = ClientBuilder::new().timeout(timeout).build()?;
 
         Ok(APIClient {

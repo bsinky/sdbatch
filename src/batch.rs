@@ -1,16 +1,15 @@
+use self::auto1111_api::APIClient;
 use chrono::Local;
+use image::io::Reader as ImageReader;
 use rand::seq::SliceRandom;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use std::{
     fmt::{self},
     fs,
-    io::Write,
+    io::{Cursor, Write},
     path::{Path, PathBuf},
 };
-
-use serde::{Deserialize, Serialize};
-
-use self::auto1111_api::APIClient;
 
 mod auto1111_api;
 
@@ -31,6 +30,8 @@ pub struct PromptData {
     clip_skip: Option<u8>,
     seed: Option<i64>,
     hires: Option<HiResSettings>,
+    /// Post-processing to perform on generated image
+    post_process: Option<PostProcesses>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -39,6 +40,11 @@ pub struct HiResSettings {
     upscale_by: f32,
     denoising_strength: f32,
     steps: u8,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub enum PostProcesses {
+    Resize { scale_by: f32 },
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -76,7 +82,11 @@ pub struct BatchTemplate {
     pub modifiers: Option<Vec<WeightedPrompt>>,
 }
 
-fn get_api_client(api_url: Option<&str>, save_images: &Option<bool>, restore_faces: &Option<bool>) -> anyhow::Result<APIClient> {
+fn get_api_client(
+    api_url: Option<&str>,
+    save_images: &Option<bool>,
+    restore_faces: &Option<bool>,
+) -> anyhow::Result<APIClient> {
     let url_to_use = match api_url {
         Some(url) => url,
         None => "http://127.0.0.1:7860",
@@ -139,7 +149,11 @@ impl BatchTemplate {
         let api = if dry_run {
             None
         } else {
-            Some(get_api_client(api_url, &self.save_images, &self.restore_faces)?)
+            Some(get_api_client(
+                api_url,
+                &self.save_images,
+                &self.restore_faces,
+            )?)
         };
 
         for (prompt_index, prompt) in prompt_pool.iter().enumerate() {
@@ -195,7 +209,7 @@ impl BatchTemplate {
         if let Some(modifiers) = &self.modifiers {
             if let Some(modifier) = modifiers.choose(&mut rng) {
                 let roll: f32 = rng.gen();
-                if roll <= modifier.chance {
+                if roll <= modifier.chance.unwrap_or(1.0) {
                     // ring-a-ding-ding!
                     prompt_data.positive =
                         Self::combine_prompts(&prompt_data.positive, &modifier.prompt);
@@ -235,8 +249,39 @@ impl BatchTemplate {
                 // TODO: We will have seeds for these, but nowhere to put them in the log.
             }
 
-            let mut dest_file = fs::File::create(&image_filename)?;
-            dest_file.write_all(image_bytes)?;
+            match &prompt.post_process {
+                None => {
+                    let mut dest_file = fs::File::create(&image_filename)?;
+                    dest_file.write_all(image_bytes)?;
+                }
+                Some(p) => {
+                    print!("Post-processing...");
+                    match p {
+                        PostProcesses::Resize { scale_by } => {
+                            let (orig_img_w, orig_img_h) = match &prompt.hires {
+                                Some(hires) => (
+                                    (prompt.width as f32 * hires.upscale_by) as u32,
+                                    (prompt.height as f32 * hires.upscale_by) as u32,
+                                ),
+                                None => (prompt.width, prompt.height),
+                            };
+                            let orig_img = ImageReader::new(Cursor::new(image_bytes))
+                                .with_guessed_format()?
+                                .decode()?;
+                            let new_w = (orig_img_w as f32 * scale_by) as u32;
+                            let new_h = (orig_img_h as f32 * scale_by) as u32;
+                            println!("resizing to {}x{}", new_w, new_h);
+                            let resized_img = image::imageops::resize(
+                                &orig_img,
+                                new_w,
+                                new_h,
+                                image::imageops::FilterType::Lanczos3,
+                            );
+                            resized_img.save(&image_filename)?;
+                        }
+                    };
+                }
+            }
         }
 
         Ok(())
@@ -276,10 +321,10 @@ pub enum Prompts {
 pub struct WeightedPrompt {
     /// Prompt string to use
     prompt: String,
-    /// The % chance for this prompt to be picked
+    /// The % chance for this prompt to be picked, defaults to 1.0
     ///
     /// ex., "0.8" would be an 80% chance
-    chance: f32,
+    chance: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize)]
