@@ -25,16 +25,39 @@ fn main() {
                 match batch::do_run(dry_run, sequential, &file, &output, api_url.as_deref()) {
                     Ok(results) => {
                         let duration = start.elapsed();
-                        println!(
-                            "Template run successful, created {} images in {}",
-                            results.images_created, util::print_elapsed(&duration)
-                        )
+                        if dry_run {
+                            println!(
+                                "Template run successful, generated {} prompts in {}",
+                                results.images_created,
+                                util::print_elapsed(&duration)
+                            )
+                        } else {
+                            println!(
+                                "Template run successful, created {} images in {}",
+                                results.images_created,
+                                util::print_elapsed(&duration)
+                            )
+                        }
                     }
                     Err(err) => {
                         println!("Template run error: {:?}", err)
                     }
                 }
-            }
+            },
+            Commands::Resume { api_url, file } => {
+                let start = Instant::now();
+                match batch::resume(&file, api_url.as_deref()) {
+                    Ok(images_created) => {
+                        let duration = start.elapsed();
+                        println!(
+                            "Template run successful, created {} missing images in {}",
+                            images_created,
+                            util::print_elapsed(&duration)
+                        )
+                    }
+                    Err(e) => println!("Template run error: {}", e),
+                }
+            },
             Commands::Reroll {
                 file,
                 index,
@@ -55,7 +78,10 @@ fn main() {
                     match batch::reroll_all(&file, api_url.as_deref()) {
                         Ok(_) => {
                             let duration = start.elapsed();
-                            println!("Reroll all successful, completed in {}", util::print_elapsed(&duration))
+                            println!(
+                                "Reroll all successful, completed in {}",
+                                util::print_elapsed(&duration)
+                            )
                         }
                         Err(e) => println!("Reroll all error: {}", e),
                     }
@@ -91,6 +117,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run a template, generating prompts and images
     Run {
         /// Do not generate images, merely process input files and generate prompts
         #[arg(short = 'n', long)]
@@ -111,6 +138,16 @@ enum Commands {
         /// Output directory to save log and images
         output: String,
     },
+    /// Resume generation of a template run that was interrupted or stopped partway through
+    Resume {
+        /// API URL to use, defaults to 127.0.0.1:7860 if not set
+        #[arg(long)]
+        api_url: Option<String>,
+
+        /// Batch log file to resume
+        file: String,
+    },
+    /// Regenerate images from a previous run
     Reroll {
         /// Regenerate all images from the log
         #[arg(long)]

@@ -1,16 +1,17 @@
 use self::auto1111_api::APIClient;
+use choose_rand::rand::{ChooseRand, Probable};
 use chrono::Local;
 use image::io::Reader as ImageReader;
-use rand::seq::SliceRandom;
 use rand::Rng;
+use rand::{seq::SliceRandom, RngCore};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::{
     fmt::{self},
     fs,
     io::{Cursor, Write},
     path::{Path, PathBuf},
 };
-use choose_rand::prelude::*;
 
 mod auto1111_api;
 
@@ -142,27 +143,29 @@ impl BatchTemplate {
         };
 
         let mut batch_log = BatchLog::new(&self.name);
+        std::fs::create_dir_all(output_dir)?;
 
-        if !dry_run {
-            std::fs::create_dir_all(output_dir)?;
-        }
-
-        let api = if dry_run {
-            None
-        } else {
-            Some(get_api_client(
-                api_url,
-                &self.save_images,
-                &self.restore_faces,
-            )?)
-        };
-
-        for (prompt_index, prompt) in prompt_pool.iter().enumerate() {
-            if !dry_run {
-                println!("Generating image {} of {}...", prompt_index + 1, count);
-            }
-            let prompt_data = self.run_prompt(&api, output_dir, prompt, prompt_index)?;
+        for prompt in prompt_pool.iter() {
+            let prompt_data = self.generate_log_for_prompt(prompt);
             batch_log.images.push(prompt_data);
+        }
+        let batch_log_name = batch_log.write(output_dir, &self.name)?;
+        let batch_log_name = batch_log_name
+            .file_name()
+            .expect("log file to have a valid filename");
+
+        if dry_run {
+            println!("Created log file {}", batch_log_name.to_string_lossy());
+        } else {
+            let api = get_api_client(api_url, &self.save_images, &self.restore_faces)?;
+            println!(
+                "Created log file {}, beginning image generation...",
+                batch_log_name.to_string_lossy()
+            );
+            for (prompt_index, prompt) in batch_log.images.iter_mut().enumerate() {
+                println!("Generating image {} of {}...", prompt_index + 1, count);
+                Self::generate_image(output_dir, &api, prompt, prompt_index)?;
+            }
         }
 
         Ok(batch_log)
@@ -192,13 +195,7 @@ impl BatchTemplate {
         return data;
     }
 
-    fn run_prompt(
-        &self,
-        api: &Option<APIClient>,
-        output_dir: &Path,
-        prompt: &Prompts,
-        prompt_index: usize,
-    ) -> anyhow::Result<PromptData> {
+    fn generate_log_for_prompt(&self, prompt: &Prompts) -> PromptData {
         let mut rng = rand::thread_rng();
         let mut prompt_data = match prompt {
             Prompts::Single(positive) => self.copy_with_positive(positive),
@@ -207,11 +204,9 @@ impl BatchTemplate {
                 self.copy_with_positive(
                     positive.expect("Prompts::Multiple to always pick Some positive prompt"),
                 )
-            },
+            }
             Prompts::MultipleWeighted(positive_vec) => {
-                let v: Vec<_> = choose_rand::helper::refcellify(
-                    positive_vec.to_owned()
-                ).collect();
+                let v: Vec<_> = choose_rand::helper::refcellify(positive_vec.to_owned()).collect();
 
                 let selected_prompt = v.choose_rand(&mut rng).expect("chances to sum to 1.0");
                 self.copy_with_positive(&selected_prompt.prompt)
@@ -229,11 +224,10 @@ impl BatchTemplate {
             }
         }
 
-        if let Some(api) = api {
-            Self::generate_image(output_dir, &api, &mut prompt_data, prompt_index)?;
-        }
+        // Assign a seed value
+        prompt_data.seed = Some(rng.next_u32() as i64);
 
-        Ok(prompt_data)
+        return prompt_data;
     }
 
     /// Use the Automatic1111 API and generate an image for the given prompt, and sets the seed
@@ -327,7 +321,7 @@ pub enum Prompts {
     Multiple(Vec<String>),
     /// Like Multiple, but with some options more likely to be picked than others
     /// The sum of the specified chances must add up to 1.0
-    MultipleWeighted(Vec<WeightedPrompt>)
+    MultipleWeighted(Vec<WeightedPrompt>),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -467,6 +461,65 @@ pub fn reroll(file_path: &str, index: usize, api_url: Option<&str>) -> anyhow::R
             Ok(())
         }
     }
+}
+
+pub fn resume(file_path: &str, api_url: Option<&str>) -> anyhow::Result<u32> {
+    let mut missing_images_created: u32 = 0;
+    let mut log = BatchLog::from_file(file_path)?;
+
+    let path = PathBuf::from(file_path);
+    let output_dir = path.parent().expect("couldn't get folder from file_path");
+
+    let api = get_api_client(api_url, &None, &None)?;
+
+    let mut output_dir_entries = fs::read_dir(output_dir)?
+        .map(|res| res.map(|e| e.path()))
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+
+    output_dir_entries.sort();
+    let mut existing_image_indices = vec![];
+    for file_path in output_dir_entries {
+        match file_path.extension() {
+            None => {
+                continue;
+            }
+            Some(ext) => {
+                if ext != "png" {
+                    continue;
+                }
+            }
+        }
+
+        if let Some(file_name) = file_path.file_stem() {
+            if let Some(image_index) =
+                usize::from_str_radix(file_name.to_str().unwrap_or(""), 10).ok()
+            {
+                existing_image_indices.push(image_index);
+            }
+        }
+    }
+
+    let mut first = true;
+    for (index, prompt) in log.images.clone().iter().enumerate() {
+        if existing_image_indices.contains(&index) {
+            continue;
+        } else if first {
+            println!("Resuming starting with first missing image: {}", index + 1);
+            first = false;
+        }
+        println!("Generating image {}...", index + 1);
+
+        let mut updated_prompt = prompt.to_owned();
+        updated_prompt.seed = None;
+        BatchTemplate::generate_image(output_dir, &api, &mut updated_prompt, index)?;
+        log.images[index] = updated_prompt;
+
+        missing_images_created += 1;
+    }
+    let dest_file = fs::File::create(path)?;
+    log.write_update(&dest_file)?;
+
+    Ok(missing_images_created)
 }
 
 pub fn reroll_all(file_path: &str, api_url: Option<&str>) -> anyhow::Result<()> {
