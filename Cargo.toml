@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.77"
 base64 = "0.21.5"
+choose-rand = "0.2.0"
 chrono = "0.4.31"
 clap = { version = "4.4.11", features = ["derive"] }
 http = "1.0.0"

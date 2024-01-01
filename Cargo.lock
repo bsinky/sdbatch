@@ -171,6 +171,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "choose-rand"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a909fbc168f92413391975caf416fa85b1ad82212044fecb7eaa22a18037274b"
+dependencies = [
+ "eq-float",
+ "rand",
+ "weighted_rand",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -312,6 +323,12 @@ checksum = "7268b386296a025e474d5140678f75d6de9493ae55a5d709eeb9dd08149945e1"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "eq-float"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c02b5d1d1e6ba431b960d4bf971c8b0e2d2942b8cbc577d9bdf9c60fca5d41d"
 
 [[package]]
 name = "equivalent"
@@ -1107,6 +1124,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "choose-rand",
  "chrono",
  "clap",
  "http 1.0.0",
@@ -1511,6 +1529,16 @@ name = "weezl"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9193164d4de03a926d909d3bc7c30543cecb35400c02114792c2cae20d5e2dbb"
+
+[[package]]
+name = "weighted_rand"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ab9b6b2a8470ef752f01ec563216a4aa4fbb2ef285f4506b241095c1ef0b16e"
+dependencies = [
+ "rand",
+ "serde",
+]
 
 [[package]]
 name = "windows-core"

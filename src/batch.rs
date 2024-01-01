@@ -10,6 +10,7 @@ use std::{
     io::{Cursor, Write},
     path::{Path, PathBuf},
 };
+use choose_rand::prelude::*;
 
 mod auto1111_api;
 
@@ -157,6 +158,9 @@ impl BatchTemplate {
         };
 
         for (prompt_index, prompt) in prompt_pool.iter().enumerate() {
+            if !dry_run {
+                println!("Generating image {} of {}...", prompt_index + 1, count);
+            }
             let prompt_data = self.run_prompt(&api, output_dir, prompt, prompt_index)?;
             batch_log.images.push(prompt_data);
         }
@@ -203,6 +207,14 @@ impl BatchTemplate {
                 self.copy_with_positive(
                     positive.expect("Prompts::Multiple to always pick Some positive prompt"),
                 )
+            },
+            Prompts::MultipleWeighted(positive_vec) => {
+                let v: Vec<_> = choose_rand::helper::refcellify(
+                    positive_vec.to_owned()
+                ).collect();
+
+                let selected_prompt = v.choose_rand(&mut rng).expect("chances to sum to 1.0");
+                self.copy_with_positive(&selected_prompt.prompt)
             }
         };
 
@@ -218,7 +230,6 @@ impl BatchTemplate {
         }
 
         if let Some(api) = api {
-            println!("Generating image {}...", prompt_index + 1);
             Self::generate_image(output_dir, &api, &mut prompt_data, prompt_index)?;
         }
 
@@ -314,10 +325,12 @@ pub enum Prompts {
     ///
     /// ex., \["1girl, solo, dress", "1girl, solo, shirt, jeans"\]
     Multiple(Vec<String>),
-    // Idea: MultipleWeighted(Vec<WeightedPrompt>), struct option similar to Multiple but with a weight specified for each prompt
+    /// Like Multiple, but with some options more likely to be picked than others
+    /// The sum of the specified chances must add up to 1.0
+    MultipleWeighted(Vec<WeightedPrompt>)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WeightedPrompt {
     /// Prompt string to use
     prompt: String,
@@ -325,6 +338,12 @@ pub struct WeightedPrompt {
     ///
     /// ex., "0.8" would be an 80% chance
     chance: Option<f32>,
+}
+
+impl Probable for WeightedPrompt {
+    fn probability(&self) -> f32 {
+        self.chance.unwrap_or(1.0)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
