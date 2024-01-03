@@ -81,7 +81,7 @@ pub struct BatchTemplate {
     pub prompts: Vec<Prompts>,
 
     /// Additional modifiers to add to each prompt
-    pub modifiers: Option<Vec<WeightedPrompt>>,
+    pub modifiers: Option<Vec<PromptModifer>>,
 }
 
 fn get_api_client(
@@ -214,7 +214,10 @@ impl BatchTemplate {
         };
 
         if let Some(modifiers) = &self.modifiers {
-            if let Some(modifier) = modifiers.choose(&mut rng) {
+            let applicable_modifiers:Vec<_> = modifiers.iter()
+                .filter(|m| m.if_activator.is_none() || m.if_activator.as_ref().is_some_and(|activator| *&prompt_data.positive.contains(*&activator)))
+                .collect();
+            if let Some(modifier) = applicable_modifiers.choose(&mut rng) {
                 let roll: f32 = rng.gen();
                 if roll <= modifier.chance.unwrap_or(1.0) {
                     // ring-a-ding-ding!
@@ -332,6 +335,19 @@ pub struct WeightedPrompt {
     ///
     /// ex., "0.8" would be an 80% chance
     chance: Option<f32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PromptModifer {
+    /// Prompt string to use
+    prompt: String,
+    /// The % chance for this prompt to be picked, defaults to 1.0
+    ///
+    /// ex., "0.8" would be an 80% chance
+    chance: Option<f32>,
+    /// If set, the modifier will only be considered if the selected prompt already contains the given string
+    #[serde(rename = "if")]
+    if_activator: Option<String>,
 }
 
 impl Probable for WeightedPrompt {
