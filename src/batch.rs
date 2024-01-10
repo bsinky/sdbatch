@@ -6,6 +6,7 @@ use rand::Rng;
 use rand::{seq::SliceRandom, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::{
     fmt::{self},
     fs,
@@ -142,14 +143,14 @@ impl BatchTemplate {
                 .collect()
         };
 
-        let mut batch_log = BatchLog::new(&self.name);
+        let mut batch_log = BatchLog::new(&self.name, output_dir);
         std::fs::create_dir_all(output_dir)?;
 
         for prompt in prompt_pool.iter() {
             let prompt_data = self.generate_log_for_prompt(prompt);
             batch_log.images.push(prompt_data);
         }
-        let batch_log_name = batch_log.write(output_dir, &self.name)?;
+        let batch_log_name = batch_log.write()?;
         let batch_log_name = batch_log_name
             .file_name()
             .expect("log file to have a valid filename");
@@ -214,8 +215,14 @@ impl BatchTemplate {
         };
 
         if let Some(modifiers) = &self.modifiers {
-            let applicable_modifiers:Vec<_> = modifiers.iter()
-                .filter(|m| m.if_activator.is_none() || m.if_activator.as_ref().is_some_and(|activator| *&prompt_data.positive.contains(*&activator)))
+            let applicable_modifiers: Vec<_> = modifiers
+                .iter()
+                .filter(|m| {
+                    m.if_activator.is_none()
+                        || m.if_activator
+                            .as_ref()
+                            .is_some_and(|activator| *&prompt_data.positive.contains(*&activator))
+                })
                 .collect();
             if let Some(modifier) = applicable_modifiers.choose(&mut rng) {
                 let roll: f32 = rng.gen();
@@ -363,6 +370,9 @@ pub struct BatchLog {
 
     /// Generated images
     images: Vec<PromptData>,
+
+    #[serde(skip)]
+    file_path: PathBuf,
 }
 
 fn create_file_and_dir(
@@ -382,20 +392,24 @@ fn get_safe_filename(name: &str) -> String {
 }
 
 impl BatchLog {
-    fn new(name: &str) -> BatchLog {
+    fn new(name: &str, output_dir: &Path) -> BatchLog {
+        let mut file_path = PathBuf::from(output_dir);
+        file_path.push(Self::safe_logfile_name(name));
         return BatchLog {
             template: name.to_owned(),
             images: vec![],
+            file_path
         };
     }
 
     fn from_file(file_path: &str) -> anyhow::Result<BatchLog> {
         let log_file = fs::File::open(file_path)?;
-        let log: BatchLog = serde_json::from_reader(log_file)?;
+        let mut log: BatchLog = serde_json::from_reader(log_file)?;
+        log.file_path = PathBuf::from_str(file_path)?;
         Ok(log)
     }
 
-    fn safe_logfile_name(&self, name: &str) -> PathBuf {
+    fn safe_logfile_name(name: &str) -> PathBuf {
         let timestamp = Local::now();
         let timestamp = format!("{}", timestamp.format("%Y-%m-%d-%H%M"));
 
@@ -404,12 +418,19 @@ impl BatchLog {
     }
 
     /// Serialize to JSON and write to disk
-    pub fn write(&self, output_dir: &Path, template_name: &str) -> anyhow::Result<PathBuf> {
-        let dest_filename = self.safe_logfile_name(template_name);
-        let (_, dest_file) = create_file_and_dir(output_dir, &dest_filename)?;
+    pub fn write(&self) -> anyhow::Result<PathBuf> {
+        let output_dir = &self.file_path.parent();
+        if output_dir.is_none() {
+            return Err(BatchError {
+                message: "Invalid output directory for log".to_string(),
+            }
+            .into());
+        }
+        std::fs::create_dir_all(output_dir.unwrap())?;
+        let dest_file = fs::File::create(&self.file_path)?;
         serde_json::to_writer_pretty(&dest_file, self)?;
 
-        Ok(dest_filename)
+        Ok(self.file_path.clone())
     }
 
     /// Serialize to JSON and write to disk, overwriting original file
@@ -437,11 +458,11 @@ pub fn do_run(
     let output_dir = PathBuf::from(output_dir);
 
     let batch_log = template.run(dry_run, &output_dir, sequential, api_url)?;
-    let log_file = batch_log.write(&output_dir, &template.name)?;
+    // let log_file = batch_log.write(&output_dir, &template.name)?;
 
     Ok(TemplateRunResults {
         images_created: batch_log.images.len(),
-        log_file,
+        log_file: batch_log.file_path,
     })
 }
 
