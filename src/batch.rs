@@ -570,10 +570,10 @@ pub fn resume(file_path: &str, api_url: Option<&str>) -> anyhow::Result<u32> {
         if existing_image_indices.contains(&index) {
             continue;
         } else if first {
-            println!("Resuming starting with first missing image: {}", index + 1);
+            println!("Resuming starting with first missing image: {}", index);
             first = false;
         }
-        println!("Generating image {}...", index + 1);
+        println!("Generating image {}...", index);
 
         let mut updated_prompt = prompt.to_owned();
         updated_prompt.seed = None;
