@@ -223,6 +223,12 @@ impl BatchTemplate {
                             .as_ref()
                             .is_some_and(|activator| *&prompt_data.positive.contains(*&activator))
                 })
+                .filter(|m| {
+                    m.if_not_activator.is_none()
+                        || m.if_not_activator
+                            .as_ref()
+                            .is_some_and(|activator| filter_if_not(&prompt_data, &activator))
+                })
                 .collect();
             if let Some(modifier) = applicable_modifiers.choose(&mut rng) {
                 let roll: f32 = rng.gen();
@@ -317,6 +323,18 @@ impl BatchTemplate {
     }
 }
 
+fn filter_if_not(prompt: &PromptData, activator: &&OneToManyPrompts) -> bool {
+    match activator {
+        OneToManyPrompts::One(not_keyword) => {
+            return !prompt.positive.contains(not_keyword)
+        },
+        OneToManyPrompts::Many(not_keywords) => {
+            return !not_keywords.iter()
+                .any(|keyword| prompt.positive.contains(keyword))
+        },
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Prompts {
@@ -345,6 +363,14 @@ pub struct WeightedPrompt {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum OneToManyPrompts
+{
+    One(String),
+    Many(Vec<String>)
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PromptModifer {
     /// Prompt string to use
     prompt: String,
@@ -355,6 +381,9 @@ pub struct PromptModifer {
     /// If set, the modifier will only be considered if the selected prompt already contains the given string
     #[serde(rename = "if")]
     if_activator: Option<String>,
+    /// If set, the modifier will only be considered if the selected prompt does not contain given string(s)
+    #[serde(rename = "if-not")]
+    if_not_activator: Option<OneToManyPrompts>,
 }
 
 impl Probable for WeightedPrompt {
